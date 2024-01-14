@@ -88,6 +88,7 @@ void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
     // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
     // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
     CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, &beta, m2->m, ldb, res->m, ldc));
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res)
@@ -109,28 +110,32 @@ void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *r
     // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
     // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
     CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, &beta, m2->m, ldb, res->m, ldc));
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res)
+void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res, 
+                bool transposea, bool transposeb, double alpha)
 {
-    assert ( (m1->columns == m2->rows)  &&
-             (m1->rows == res->rows)    &&
-             (m2->columns == res->columns));
+    // TODO: rewrite assertions to account for transpositions
+    // assert ( (m1->columns == m2->rows)  &&
+    //          (m1->rows == res->rows)    &&
+    //          (m2->columns == res->columns));
 
-    cublasOperation_t transa = CUBLAS_OP_N;
-    cublasOperation_t transb = CUBLAS_OP_N;
-    double alpha = 1.0, beta = 1.0;
-    int m = m1->rows;
-    int n = m2->columns;
-    int k = m1->columns;
+    cublasOperation_t transa = transposea? CUBLAS_OP_T : CUBLAS_OP_N;
+    cublasOperation_t transb = transposeb? CUBLAS_OP_T : CUBLAS_OP_N;
+    double beta = 0;
+    int m = transposea? m1->columns: m1->rows;
+    int n = transposeb? m2->rows: m2->columns;
+    int k = transposea ? m1->rows : m1->columns;
     int lda = m1->rows;
     int ldb = m2->rows;
     int ldc = res->rows;
 
     // printf("%d, %d, %d, %d, %d, %d\n", m, n, k, lda, ldb, ldc);
-    // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
+    // printf("(%d, %d),(%d, %d),(%d, %d), A^T %d, B^T %d\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns, transposea, transposeb);
     // fflush(stdout);
     CUBLAS_CHECK(cublasDgemm(handle, transa, transb, m, n, k, &alpha, m1->m, lda, m2->m, ldb, &beta, res->m, ldc));
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)

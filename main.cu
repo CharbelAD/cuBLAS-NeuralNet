@@ -135,24 +135,6 @@ double accuracy_cmajr(cublasHandle_t handle, image* test_img, byte* test_label, 
     return (100.0 * (double) (good) / ntests);
 }
 
-// void populate_minibatch(double * x, double * y, unsigned * minibatch_idx, unsigned minibatch_size, image * img, unsigned img_size, byte* label, unsigned label_size)
-// {
-//     for (int col = 0; col < minibatch_size; col ++)
-//     {
-//         for (int row = 0; row < img_size; row ++)
-//         {
-//             x[row * minibatch_size + col] = (double) img[minibatch_idx[col]][row]/255.;
-//         }
-
-//         for (int row = 0; row < 10; row ++)
-//         {
-//             y[row * minibatch_size + col] = 0.0;
-//         }
-
-//         y[ label[minibatch_idx[col]] * minibatch_size + col] = 1.0;
-//     }
-// }
-
 void populate_minibatch(double * x, double * y, unsigned * minibatch_idx, unsigned minibatch_size, image * img, unsigned img_size, byte* label, unsigned label_size)
 {
     for (int col = 0; col < minibatch_size; col++)

@@ -26,7 +26,7 @@ void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
 
 void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res);
 
-void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res);
+void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res, bool transposea=false, bool transposeb=false, double alpha=1.0);
 
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res);
 

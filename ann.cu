@@ -147,19 +147,11 @@ void forward(cublasHandle_t handle, ann_t *nn, double (*activation_function)(dou
         for (int idx = 0; idx < one->columns*one->rows; idx++)
             one->m[idx] = 1.0;
 
-        // printf("Mul call 1\n");
         matrix_mul(handle, nn->layers[l]->weights, nn->layers[l-1]->activations, z1); // z1 <- w^l x a^(l-1)
-        CUDA_CHECK(cudaDeviceSynchronize());
-        // printf("Mul call 2\n");
         matrix_mul(handle, nn->layers[l]->biases, one, z2); // z2 <- b^l x 1        
-        CUDA_CHECK(cudaDeviceSynchronize());
-        // printf("Sum\n");
-        CUDA_CHECK(cudaDeviceSynchronize());
         matrix_sum(handle, z1, z2, nn->layers[l]->z); // z^l <- z1 + z2 <=> z^l <- w^l x a^(l-1) + b^l x 1      
-        CUDA_CHECK(cudaDeviceSynchronize());
         matrix_function(nn->layers[l]->z, activation_function, nn->layers[l]->activations); // a^l = f(z^l)
 
-        CUDA_CHECK(cudaDeviceSynchronize());
         destroy_matrix(z1);
         destroy_matrix(z2);
         destroy_matrix(one);
@@ -173,7 +165,6 @@ void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, double (*derivative
     matrix_t *dfzL = alloc_matrix(nn->layers[L]->number_of_neurons, nn->minibatch_size);
 
     matrix_minus(handle, nn->layers[L]->activations, y, nn->layers[L]->delta);  // delta^(L) = (a^L - y)
-    CUDA_CHECK(cudaDeviceSynchronize());
     matrix_function(nn->layers[L]->z, derivative_actfunct, dfzL); // f'(z^(L))
     hadamard_product(nn->layers[L]->delta, dfzL, nn->layers[L]->delta); // delta^(L) = (a^L - y) o f'(z^(L))
 
@@ -181,57 +172,35 @@ void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, double (*derivative
 
     for (int l = L; l > 1; l--)
     {
-        matrix_t *tw, *delta_tmp, *dfz;
-        tw = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->layers[l]->number_of_neurons);
+        matrix_t *delta_tmp, *dfz;
         delta_tmp = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->minibatch_size);
         dfz = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->minibatch_size);
 
-        matrix_transpose(handle, nn->layers[l]->weights, tw); // (w^l)T        
-        CUDA_CHECK(cudaDeviceSynchronize());
-        // printf("Mul call 3\n");
-        matrix_mul(handle, tw, nn->layers[l]->delta, delta_tmp); // (w^l)T x delta^l
-        CUDA_CHECK(cudaDeviceSynchronize());
+        matrix_mul(handle, nn->layers[l]->weights, nn->layers[l]->delta, delta_tmp, true, false, 1.0); // (w^l)T x delta^l
         matrix_function(nn->layers[l-1]->z, derivative_actfunct, dfz); // f'(z^(l-1))
         hadamard_product(delta_tmp, dfz, nn->layers[l-1]->delta); // delta^(l-1) = (w^l)T x delta^l o f'(z^(l-1))
 
-        CUDA_CHECK(cudaDeviceSynchronize());
-        destroy_matrix(tw);
         destroy_matrix(delta_tmp);
         destroy_matrix(dfz);
     }
 
     for (int l = 1; l < nn->number_of_layers; l++)
     {
-        matrix_t *w1, *ta;
+        matrix_t *w1;
         w1 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->layers[l-1]->number_of_neurons);
-        ta = alloc_matrix(nn->minibatch_size, nn->layers[l-1]->number_of_neurons);
         
-        matrix_transpose(handle, nn->layers[l-1]->activations, ta); // ta <- (a^(l-1))^T
-        CUDA_CHECK(cudaDeviceSynchronize());
-        // printf("Mul call 4\n");
-        matrix_mul(handle, nn->layers[l]->delta, ta, w1); // w1 <- delta^l x (a^(l-1))^T
-        CUDA_CHECK(cudaDeviceSynchronize());
-        matrix_scalar(handle, w1, nn->alpha / nn->minibatch_size); // w1 <- alpha /m . delta^l x (a^(l-1))^T
-        CUDA_CHECK(cudaDeviceSynchronize());
+        matrix_mul(handle, nn->layers[l]->delta, nn->layers[l-1]->activations, w1, false, true, nn->alpha / nn->minibatch_size); // w1 <- delta^l x (a^(l-1))^T
         matrix_minus(handle, nn->layers[l]->weights, w1, nn->layers[l]->weights); // w^l <- w^l - alpha /m . delta^l x (a^(l-1))^T
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        destroy_matrix(w1);
-        destroy_matrix(ta);
 
         matrix_t *one, *b1;
         b1 = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
         one = alloc_matrix(nn->minibatch_size, 1);
         for (int idx = 0; idx < one->columns*one->rows; idx++)
-            one->m[idx] = 1.0;
-        // printf("Mul call 5\n");
-        matrix_mul(handle, nn->layers[l]->delta, one, b1); // b1 <- delta^l x 1^T
-        CUDA_CHECK(cudaDeviceSynchronize());
-        matrix_scalar(handle, b1,  nn->alpha / nn->minibatch_size); // b1 <- alpha / m . delta^l x 1^T
-        CUDA_CHECK(cudaDeviceSynchronize());
+            one->m[idx] = 1.0;  // TODO: maybe kernelize
+        matrix_mul(handle, nn->layers[l]->delta, one, b1, false, false, nn->alpha / nn->minibatch_size); // b1 <- delta^l x 1^T
         matrix_minus(handle, nn->layers[l]->biases, b1, nn->layers[l]->biases); // b^l = b^l - alpha / m . delta^l x 1^T
-        CUDA_CHECK(cudaDeviceSynchronize());
 
+        destroy_matrix(w1);
         destroy_matrix(one);
         destroy_matrix(b1);
     }
