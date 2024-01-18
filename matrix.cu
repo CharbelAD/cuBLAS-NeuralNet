@@ -8,15 +8,36 @@
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
+#define THREADS_PER_BLOCK 512
 
-matrix_t * alloc_matrix(unsigned rows, unsigned columns)
+matrix_t * alloc_matrix(unsigned rows, unsigned columns, bool zero)
 {
     matrix_t * res;
     CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
     CUDA_CHECK(cudaMallocManaged((void **) &(res->m), columns * rows * sizeof(double)));
-    CUDA_CHECK(cudaMemset(res->m, 0, columns * rows * sizeof(double)));  // https://forums.developer.nvidia.com/t/can-i-set-a-floats-to-zero-with-cudamemset/153706
+    if (zero) CUDA_CHECK(cudaMemset(res->m, 0, columns * rows * sizeof(double)));  // https://forums.developer.nvidia.com/t/can-i-set-a-floats-to-zero-with-cudamemset/153706
     res->columns = columns;
     res->rows = rows;
+    return res;
+}
+
+__global__ void set_one(double* vec, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+	if (index < n)
+		vec[index] = 1.0;
+}
+
+
+matrix_t * alloc_ones(unsigned rows, unsigned columns)
+{
+    matrix_t * res;
+    CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
+    CUDA_CHECK(cudaMallocManaged((void **) &(res->m), columns * rows * sizeof(double)));
+    int n = rows * columns;
+    set_one<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(res->m, n);
+    res->columns = columns;
+    res->rows = rows;
+    CUDA_CHECK(cudaDeviceSynchronize());
     return res;
 }
 
@@ -55,7 +76,14 @@ void print_matrix(matrix_t *m, bool is_short){
     if (is_short && lim_rows != m->rows) printf("...\n");
 }
 
-// TODO: make a kernel
+
+__global__ void hadamard_prod(double *v1, double *v2, double *res, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+	if (index < n)
+		res[index] = v1[index] * v2[index];
+}
+
+
 void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
 {
     assert ( (m1->columns == m2->columns)   &&
@@ -63,10 +91,30 @@ void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
              (m1->rows == m2->rows)         &&
              (m1->rows == res->rows));
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    {
-            res->m[idx] = m1->m[idx] * m2->m[idx];
-    }
+    // for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
+    // {
+    //         res->m[idx] = m1->m[idx] * m2->m[idx];
+    // }
+    int n = m1->rows * m1->columns;
+    hadamard_prod<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, m2->m, res->m, n);
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+void cumatrix_add(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res, double* beta)
+{
+    cublasOperation_t transa = CUBLAS_OP_N;
+    cublasOperation_t transb = CUBLAS_OP_N;
+    double alpha = 1.0;
+    int m = m1->rows;
+    int n = m2->columns;
+    int lda = m1->rows;
+    int ldb = m2->rows;
+    int ldc = res->rows;
+
+    // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
+    // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
+    CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, beta, m2->m, ldb, res->m, ldc));
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res)
@@ -76,18 +124,9 @@ void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
              (m1->rows == m2->rows)        &&
              (m1->rows == res->rows));
 
-    cublasOperation_t transa = CUBLAS_OP_N;
-    cublasOperation_t transb = CUBLAS_OP_N;
-    double alpha = 1.0, beta = 1.0;
-    int m = m1->rows;
-    int n = m2->columns;
-    int lda = m1->rows;
-    int ldb = m2->rows;
-    int ldc = res->rows;
+    double beta = 1.0;
+    cumatrix_add(handle, m1, m2, res, &beta);
 
-    // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
-    // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
-    CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, &beta, m2->m, ldb, res->m, ldc));
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -97,19 +136,10 @@ void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *r
              (m1->columns == res->columns) &&
              (m1->rows == m2->rows)        &&
              (m1->rows == res->rows));
-             
-    cublasOperation_t transa = CUBLAS_OP_N;
-    cublasOperation_t transb = CUBLAS_OP_N;
-    double alpha = 1.0, beta = -1.0;
-    int m = m1->rows;
-    int n = m2->columns;
-    int lda = m1->rows;
-    int ldb = m2->rows;
-    int ldc = res->rows;
 
-    // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
-    // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
-    CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, &beta, m2->m, ldb, res->m, ldc));
+    double beta = -1.0;
+    cumatrix_add(handle, m1, m2, res, &beta);
+
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -121,12 +151,14 @@ void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
     //          (m1->rows == res->rows)    &&
     //          (m2->columns == res->columns));
 
-    cublasOperation_t transa = transposea? CUBLAS_OP_T : CUBLAS_OP_N;
-    cublasOperation_t transb = transposeb? CUBLAS_OP_T : CUBLAS_OP_N;
+    cublasOperation_t transa = transposea ? CUBLAS_OP_T : CUBLAS_OP_N;
+    cublasOperation_t transb = transposeb ? CUBLAS_OP_T : CUBLAS_OP_N;
     double beta = 0;
-    int m = transposea? m1->columns: m1->rows;
-    int n = transposeb? m2->rows: m2->columns;
+    // m, n, and k are tied to the mathematical dimensions of Op(A) and Op(B), not with their physical representation
+    int m = transposea ? m1->columns : m1->rows;
+    int n = transposeb ? m2->rows : m2->columns;
     int k = transposea ? m1->rows : m1->columns;
+    // lda, ldb, and ldc are tied to the way the matrices are physically stored, they don't change with Op(A) and Op(b)
     int lda = m1->rows;
     int ldb = m2->rows;
     int ldc = res->rows;
@@ -138,18 +170,51 @@ void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
+template<class F>
+__global__ void matrix_apply(double*  m1, F f, double *res, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n)
+        res[index] = f(m1[index]);
+}
+
+__device__ double sigmoid_d(double x)
+{
+    return 1 / (1 + exp(-x));
+}
+
+__global__ void sigmoid_kernel(double*  m1, double *res, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n)
+        res[index] = sigmoid_d(m1[index]);
+}
+
+__device__ double dsigmoid_d(double x)
+{
+    return sigmoid_d(x)*(1-sigmoid_d(x));
+}
+
+__global__ void dsigmoid_kernel(double*  m1, double *res, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n)
+        res[index] = dsigmoid_d(m1[index]);
+}
+
+void matrix_function(matrix_t *m1, const char* fct, matrix_t *res)
 {
     assert ( (m1->columns == res->columns) &&             
              (m1->rows == res->rows));
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    {
-        res->m[idx] = f(m1->m[idx]);
+    int n = m1->rows * m1->columns;
+    if (strcmp(fct, "sigmoid") == 0){
+        sigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, res->m, n);
     }
+    else if (strcmp(fct, "dsigmoid") == 0){
+        dsigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, res->m, n);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-// TODO: remove and replace usages
+// NOTE: Unused and should be avoided. Prefer transposing while doing other operations if possible
 void matrix_transpose(cublasHandle_t handle, matrix_t *m1, matrix_t *res)
 {
     assert ( (m1->columns == res->rows) &&             
@@ -167,7 +232,6 @@ void matrix_transpose(cublasHandle_t handle, matrix_t *m1, matrix_t *res)
     // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
     // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
     CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, &beta, NULL, ldb, res->m, ldc));
-    
 }
 
 void matrix_scalar(cublasHandle_t handle, matrix_t *m1, double alpha)

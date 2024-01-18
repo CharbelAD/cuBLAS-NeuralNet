@@ -53,46 +53,6 @@ double dsigmoid(double x)
     return sigmoid(x)*(1-sigmoid(x));
 }
 
-double accuracy(cublasHandle_t handle, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
-{
-    unsigned good = 0;
-    unsigned idx[datasize];    
-    double *x = (double *) malloc( 28 * 28 * minibatch_size * sizeof(double));
-    double *y = (double *) malloc( 10 * minibatch_size * sizeof(double) );
-
-    zero_to_n(datasize, idx);
-    
-    for (int i = 0; i < datasize - minibatch_size; i+= minibatch_size)
-    {        
-        populate_minibatch(x, y, &idx[i], minibatch_size, test_img, 28*28, test_label, 10);
-        memcpy(nn->layers[0]->activations->m, x, 28*28 * minibatch_size * sizeof(double));     
-        
-        forward(handle, nn, sigmoid);
-        for (int col = 0; col < minibatch_size; col ++)
-        {
-            int idxTrainingData = col + i ;
-            double max = 0;
-            unsigned idx_max = 0;
-            for (int row = 0; row < 10; row++){
-                int idx = col + row * minibatch_size;
-                if (nn->layers[nn->number_of_layers-1]->activations->m[idx] > max){
-                    max = nn->layers[nn->number_of_layers-1]->activations->m[idx];
-                    idx_max = row;
-                }
-            }
-            if (idx_max == test_label[idxTrainingData])
-            {
-                good ++;
-            }
-        }
-    }    
-    free(x);
-    free(y);
-
-    unsigned ntests = (datasize/minibatch_size) * minibatch_size;
-    return (100.0* (double) (good) / ntests );
-}
-
 double accuracy_cmajr(cublasHandle_t handle, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
 {
     unsigned good = 0;
@@ -104,10 +64,10 @@ double accuracy_cmajr(cublasHandle_t handle, image* test_img, byte* test_label, 
     
     for (int i = 0; i < datasize - minibatch_size; i += minibatch_size)
     {        
-        populate_minibatch(x, y, &idx[i], minibatch_size, test_img, 28*28, test_label, 10);
-        memcpy(nn->layers[0]->activations->m, x, 28*28 * minibatch_size * sizeof(double));     
+        populate_minibatch(nn->layers[0]->activations->m, y, &idx[i], minibatch_size, test_img, 28*28, test_label, 10);
+        //memcpy(nn->layers[0]->activations->m, x, 28*28 * minibatch_size * sizeof(double));     
         
-        forward(handle, nn, sigmoid);
+        forward(handle, nn, "sigmoid");
         for (int col = 0; col < minibatch_size; col++)
         {
             int idxTrainingData = col + i;
@@ -175,7 +135,7 @@ int main(int argc, char *argv[])
     byte* train_label = read_labels("train-labels-idx1-ubyte", &datasize);
     image* test_img = read_images("t10k-images-idx3-ubyte", &ntest);
     byte* test_label = read_labels("t10k-labels-idx1-ubyte", &ntest);
-    printf("Images loaded...\n");
+    printf("%d train and %d test images loaded...\n", datasize, ntest);
     fflush(stdin);
 
     ann_t * nn;
@@ -195,9 +155,9 @@ int main(int argc, char *argv[])
     cudaMallocManaged(&x, 28*28 * minibatch_size * sizeof( double ));
     double *y;// = (double *) malloc(10 * minibatch_size * sizeof( double ));
     cudaMallocManaged(&y, 10 * minibatch_size * sizeof( double ));
-    matrix_t *out = alloc_matrix(10, minibatch_size);
+    matrix_t *out = alloc_matrix(10, minibatch_size, false);
     
-    for (int epoch = 0; epoch < 5; epoch ++)
+    for (int epoch = 0; epoch < 2; epoch ++)
     {
         printf("start learning epoch %d\n", epoch);
 
@@ -205,11 +165,12 @@ int main(int argc, char *argv[])
 
         for (int i = 0; i < datasize - minibatch_size ; i+= minibatch_size)
         {
-            populate_minibatch(x, y, shuffled_idx+i, minibatch_size, train_img, 28*28, train_label, 10);
-            memcpy(nn->layers[0]->activations->m, x, 28 * 28 * minibatch_size * sizeof(double));
-            forward(cublasH, nn, sigmoid);
+            // TODO: profile the memcpy time saved
+            populate_minibatch(nn->layers[0]->activations->m, y, shuffled_idx+i, minibatch_size, train_img, 28*28, train_label, 10);
+            //memcpy(nn->layers[0]->activations->m, x, 28 * 28 * minibatch_size * sizeof(double));
+            forward(cublasH, nn, "sigmoid");
             memcpy(out->m, y, 10 * minibatch_size * sizeof(double));            
-            backward(cublasH, nn, out, dsigmoid);            
+            backward(cublasH, nn, out, "dsigmoid");            
         }     
         printf("epoch %d accuracy %lf\n", epoch, accuracy_cmajr(cublasH, test_img, test_label, ntest, minibatch_size, nn));
     }

@@ -13,7 +13,6 @@
 #include <random>
 
 double normalRand(double mu, double sigma);
-//void init_weight(matrix_t* w, unsigned nneurones_prev);
 void print_layer(layer_t *layer);
 
 // double normalRand(double mu, double sigma)
@@ -90,11 +89,11 @@ layer_t * create_layer(unsigned layer_number, unsigned number_of_neurons, unsign
 
     layer->number_of_neurons = number_of_neurons;
     layer->minibatch_size = minibatch_size;    
-    layer->activations = alloc_matrix(number_of_neurons, minibatch_size);
-    layer->z = alloc_matrix(number_of_neurons, minibatch_size);
-    layer->delta = alloc_matrix(number_of_neurons, minibatch_size);
+    layer->activations = alloc_matrix(number_of_neurons, minibatch_size, true);
+    layer->z = alloc_matrix(number_of_neurons, minibatch_size, true);
+    layer->delta = alloc_matrix(number_of_neurons, minibatch_size, true);
     layer->weights = alloc_matrix(number_of_neurons, nneurons_previous_layer);    
-    layer->biases = alloc_matrix(number_of_neurons, 1);
+    layer->biases = alloc_matrix(number_of_neurons, 1, true);
 
     if (layer_number > 0)
     {
@@ -137,19 +136,19 @@ void print_nn(ann_t *nn)
     }
 }
 
-void forward(cublasHandle_t handle, ann_t *nn, double (*activation_function)(double))
+void forward(cublasHandle_t handle, ann_t *nn, const char* activation_function)
 {
     for (int l = 1; l < nn->number_of_layers; l++)
     {
         matrix_t *z1 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->minibatch_size);
         matrix_t *z2 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->minibatch_size);
-        matrix_t *one = alloc_matrix(1, nn->minibatch_size);
-        for (int idx = 0; idx < one->columns*one->rows; idx++)
-            one->m[idx] = 1.0;
+        matrix_t *one = alloc_ones(1, nn->minibatch_size);
+        // for (int idx = 0; idx < one->columns*one->rows; idx++)
+        //     one->m[idx] = 1.0;  // TODO: kernelize maybe
 
         matrix_mul(handle, nn->layers[l]->weights, nn->layers[l-1]->activations, z1); // z1 <- w^l x a^(l-1)
-        matrix_mul(handle, nn->layers[l]->biases, one, z2); // z2 <- b^l x 1        
-        matrix_sum(handle, z1, z2, nn->layers[l]->z); // z^l <- z1 + z2 <=> z^l <- w^l x a^(l-1) + b^l x 1      
+        matrix_mul(handle, nn->layers[l]->biases, one, z2); // z2 <- b^l x 1
+        matrix_sum(handle, z1, z2, nn->layers[l]->z); // z^l <- z1 + z2 <=> z^l <- w^l x a^(l-1) + b^l x 1
         matrix_function(nn->layers[l]->z, activation_function, nn->layers[l]->activations); // a^l = f(z^l)
 
         destroy_matrix(z1);
@@ -158,7 +157,7 @@ void forward(cublasHandle_t handle, ann_t *nn, double (*activation_function)(dou
     }
 }
 
-void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, double (*derivative_actfunct)(double))
+void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, const char*derivative_actfunct)
 {
     unsigned L = nn->number_of_layers-1;
 
@@ -194,9 +193,9 @@ void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, double (*derivative
 
         matrix_t *one, *b1;
         b1 = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
-        one = alloc_matrix(nn->minibatch_size, 1);
-        for (int idx = 0; idx < one->columns*one->rows; idx++)
-            one->m[idx] = 1.0;  // TODO: maybe kernelize
+        one = alloc_ones(nn->minibatch_size, 1);
+        // for (int idx = 0; idx < one->columns*one->rows; idx++)
+        //     one->m[idx] = 1.0;  // TODO: maybe kernelize
         matrix_mul(handle, nn->layers[l]->delta, one, b1, false, false, nn->alpha / nn->minibatch_size); // b1 <- delta^l x 1^T
         matrix_minus(handle, nn->layers[l]->biases, b1, nn->layers[l]->biases); // b^l = b^l - alpha / m . delta^l x 1^T
 
