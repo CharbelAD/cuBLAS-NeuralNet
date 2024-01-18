@@ -22,7 +22,9 @@ byte* read_labels(const char filename[], unsigned* n )
     fread(buf, 1, 4, data); // number of labels
     *n = make_uint32(buf);
 
-    byte* ls = (byte*) calloc(*n, sizeof(byte));
+    //byte* ls = (byte*) calloc(*n, sizeof(byte));
+    byte* ls;
+    cudaHostAlloc((void **) &ls, (*n) *  sizeof(byte), cudaHostAllocDefault);
 
     // Read n labels
     fread(ls, 1, *n, data);
@@ -51,7 +53,9 @@ image* read_images(const char filename[], unsigned* n )
     fread(buf, 1, 4, data); // rows (discarded)
     fread(buf, 1, 4, data); // columns (discarded)
 
-    image* is = (image*) calloc(*n, sizeof(image));
+    //image* is = (image*) calloc(*n, sizeof(image));
+    image* is;
+    cudaHostAlloc((void **) &is, (*n) *  sizeof(image), cudaHostAllocDefault);
 
     // Read n images
     fread(is, 28*28, *n, data);

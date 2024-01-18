@@ -43,31 +43,22 @@ void shuffle(unsigned *t, const unsigned size, const unsigned number_of_switch)
     }
 }
 
-double sigmoid(double x)
-{
-    return 1 / (1 + exp(-x));
-}
-
-double dsigmoid(double x)
-{
-    return sigmoid(x)*(1-sigmoid(x));
-}
-
-double accuracy_cmajr(cublasHandle_t handle, cudaStream_t stream, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
+double accuracy(cublasHandle_t handle, cudaStream_t stream, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
 {
     unsigned good = 0;
-    unsigned idx[datasize];    
-    double *x = (double *) malloc(28 * 28 * minibatch_size * sizeof(double));
+    unsigned idx[datasize];
     double *y = (double *) malloc(10 * minibatch_size * sizeof(double));
+    double *y_pred;
 
     zero_to_n(datasize, idx);
     
     for (int i = 0; i < datasize - minibatch_size; i += minibatch_size)
     {        
         populate_minibatch(nn->layers[0]->activations->m, y, &idx[i], minibatch_size, test_img, 28*28, test_label, 10);
-        //memcpy(nn->layers[0]->activations->m, x, 28*28 * minibatch_size * sizeof(double));     
         
         forward(handle, stream, nn, "sigmoid");
+        CUDA_CHECK(cudaDeviceSynchronize());
+        y_pred = nn->layers[nn->number_of_layers-1]->activations->m;  // Just an alias
         for (int col = 0; col < minibatch_size; col++)
         {
             int idxTrainingData = col + i;
@@ -76,9 +67,9 @@ double accuracy_cmajr(cublasHandle_t handle, cudaStream_t stream, image* test_im
             for (int row = 0; row < 10; row++)
             {
                 int idx = col * 10 + row;  // Adjusted for column-major order
-                if (nn->layers[nn->number_of_layers-1]->activations->m[idx] > max)
+                if (y_pred[idx] > max)
                 {
-                    max = nn->layers[nn->number_of_layers-1]->activations->m[idx];
+                    max = y_pred[idx];
                     idx_max = row;
                 }
             }
@@ -87,8 +78,7 @@ double accuracy_cmajr(cublasHandle_t handle, cudaStream_t stream, image* test_im
                 good++;
             }
         }
-    }    
-    free(x);
+    }
     free(y);
 
     unsigned ntests = (datasize/minibatch_size) * minibatch_size;
@@ -146,39 +136,44 @@ int main(int argc, char *argv[])
     nn = create_ann(alpha, minibatch_size, number_of_layers, nneurons_per_layer);
     //print_nn(nn);
 
-    printf("starting accuracy %lf\n", accuracy_cmajr(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn));
-
+    printf("starting accuracy %lf\n", accuracy(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn)); fflush(stdin);
     
     unsigned *shuffled_idx;// = (unsigned *)malloc(datasize*sizeof(unsigned));
     cudaMallocManaged(&shuffled_idx, datasize*sizeof(unsigned));
-    double *x;// = (double *) malloc(28*28 * minibatch_size * sizeof( double ));
-    cudaMallocManaged(&x, 28*28 * minibatch_size * sizeof( double ));
-    double *y;// = (double *) malloc(10 * minibatch_size * sizeof( double ));
-    cudaMallocManaged(&y, 10 * minibatch_size * sizeof( double ));
+    // double *x;// = (double *) malloc(28*28 * minibatch_size * sizeof( double ));
+    // cudaMallocManaged(&x, 28*28 * minibatch_size * sizeof( double ));
+    // double *y;// = (double *) malloc(10 * minibatch_size * sizeof( double ));
+    // cudaMallocManaged(&y, 10 * minibatch_size * sizeof( double ));
     matrix_t *out = alloc_matrix(10, minibatch_size, false);
     
-    for (int epoch = 0; epoch < 2; epoch ++)
+    for (int epoch = 0; epoch < 10; epoch ++)
     {
-        printf("start learning epoch %d\n", epoch);
+        printf("start learning epoch %d\n", epoch); fflush(stdin);
 
         shuffle(shuffled_idx, datasize, datasize);
 
         for (int i = 0; i < datasize - minibatch_size ; i+= minibatch_size)
         {
-            // TODO: profile the memcpy time saved
-            populate_minibatch(nn->layers[0]->activations->m, y, shuffled_idx+i, minibatch_size, train_img, 28*28, train_label, 10);
+            populate_minibatch(nn->layers[0]->activations->m, out->m, shuffled_idx+i, minibatch_size, train_img, 28*28, train_label, 10);
             //memcpy(nn->layers[0]->activations->m, x, 28 * 28 * minibatch_size * sizeof(double));
+            // Jetson does not support prefetch https://stackoverflow.com/questions/43430216/cudamemprefetchasync-returns-cudaerrorinvaliddevice-why#43430831
+            //CUDA_CHECK(cudaMemPrefetchAsync(nn->layers[0]->activations->m, 28*28 * minibatch_size * sizeof( double ), 0, stream));
             forward(cublasH, stream, nn, "sigmoid");
-            memcpy(out->m, y, 10 * minibatch_size * sizeof(double));            
-            backward(cublasH, stream, nn, out, "dsigmoid");            
-        }     
-        printf("epoch %d accuracy %lf\n", epoch, accuracy_cmajr(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn));
+            // memcpy(out->m, y, 10 * minibatch_size * sizeof(double));
+            backward(cublasH, stream, nn, out, "dsigmoid");
+        }
+        printf("epoch %d accuracy %lf\n", epoch, accuracy(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn));
     }
 
-    cudaFree(x);
-    cudaFree(y);
+    // cudaFree(x);
+    // cudaFree(y);
     cudaFree(shuffled_idx);
     destroy_matrix(out);   
+
+    cudaFreeHost(train_img);
+    cudaFreeHost(train_label);
+    cudaFreeHost(test_img);
+    cudaFreeHost(test_label);
     
     CUBLAS_CHECK(cublasDestroy(cublasH));
     CUDA_CHECK(cudaStreamDestroy(stream));

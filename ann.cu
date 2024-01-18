@@ -5,12 +5,13 @@
 #include "cublas_utils.h"
 #include <stdlib.h>
 #include <stdio.h>
-#include <math.h>
+//#include <math.h>
 #include <time.h>
 #include <float.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <random>
+#include <vector>
 
 double normalRand(double mu, double sigma);
 void print_layer(layer_t *layer);
@@ -90,10 +91,10 @@ layer_t * create_layer(unsigned layer_number, unsigned number_of_neurons, unsign
     layer->number_of_neurons = number_of_neurons;
     layer->minibatch_size = minibatch_size;    
     layer->activations = alloc_matrix(number_of_neurons, minibatch_size, true);
-    layer->z = alloc_matrix(number_of_neurons, minibatch_size, true);
-    layer->delta = alloc_matrix(number_of_neurons, minibatch_size, true);
+    layer->z = alloc_matrix_device(number_of_neurons, minibatch_size, true);
+    layer->delta = alloc_matrix_device(number_of_neurons, minibatch_size, true);
     layer->weights = alloc_matrix(number_of_neurons, nneurons_previous_layer);    
-    layer->biases = alloc_matrix(number_of_neurons, 1, true);
+    layer->biases = alloc_matrix_device(number_of_neurons, 1, true);
 
     if (layer_number > 0)
     {
@@ -138,6 +139,8 @@ void print_nn(ann_t *nn)
 
 void forward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, const char* activation_function)
 {
+    std::vector<matrix_t *> destroy_queue;
+
     for (int l = 1; l < nn->number_of_layers; l++)
     {
         matrix_t *z1 = alloc_matrix_device(nn->layers[l]->number_of_neurons, nn->minibatch_size);
@@ -149,15 +152,21 @@ void forward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, const char* 
         matrix_sum(handle, z1, z2, nn->layers[l]->z); // z^l <- z1 + z2 <=> z^l <- w^l x a^(l-1) + b^l x 1
         matrix_function(stream, nn->layers[l]->z, activation_function, nn->layers[l]->activations); // a^l = f(z^l)
 
-        destroy_matrix(z1);
-        destroy_matrix(z2);
-        destroy_matrix(one);
+        destroy_queue.push_back(z1);
+        destroy_queue.push_back(z2);
+        destroy_queue.push_back(one);
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
+
+    for (int i = 0; i < destroy_queue.size(); ++i){
+        destroy_matrix(destroy_queue[i]);
+    }
+
+    // CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void backward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, matrix_t *y, const char*derivative_actfunct)
 {
+    std::vector<matrix_t *> destroy_queue;
     unsigned L = nn->number_of_layers-1;
 
     matrix_t *dfzL = alloc_matrix_device(nn->layers[L]->number_of_neurons, nn->minibatch_size);
@@ -165,6 +174,8 @@ void backward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, matrix_t *y
     matrix_minus(handle, nn->layers[L]->activations, y, nn->layers[L]->delta);  // delta^(L) = (a^L - y)
     matrix_function(stream, nn->layers[L]->z, derivative_actfunct, dfzL); // f'(z^(L))
     hadamard_product(stream, nn->layers[L]->delta, dfzL, nn->layers[L]->delta); // delta^(L) = (a^L - y) o f'(z^(L))
+
+    destroy_queue.push_back(dfzL);
 
     for (int l = L; l > 1; l--)
     {
@@ -176,8 +187,8 @@ void backward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, matrix_t *y
         matrix_function(stream, nn->layers[l-1]->z, derivative_actfunct, dfz); // f'(z^(l-1))
         hadamard_product(stream, delta_tmp, dfz, nn->layers[l-1]->delta); // delta^(l-1) = (w^l)T x delta^l o f'(z^(l-1))
 
-        destroy_matrix(delta_tmp);
-        destroy_matrix(dfz);
+        destroy_queue.push_back(delta_tmp);
+        destroy_queue.push_back(dfz);
     }
 
     for (int l = 1; l < nn->number_of_layers; l++)
@@ -194,11 +205,14 @@ void backward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, matrix_t *y
         matrix_mul(handle, nn->layers[l]->delta, one, b1, false, false, nn->alpha / nn->minibatch_size); // b1 <- delta^l x 1^T
         matrix_minus(handle, nn->layers[l]->biases, b1, nn->layers[l]->biases); // b^l = b^l - alpha / m . delta^l x 1^T
 
-        destroy_matrix(w1);
-        destroy_matrix(one);
-        destroy_matrix(b1);
+        destroy_queue.push_back(w1);
+        destroy_queue.push_back(one);
+        destroy_queue.push_back(b1);
     }
-    destroy_matrix(dfzL);
+    
+    for (int i = 0; i < destroy_queue.size(); ++i){
+        destroy_matrix(destroy_queue[i]);
+    }
 
     CUDA_CHECK(cudaDeviceSynchronize());
 }
