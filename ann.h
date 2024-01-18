@@ -38,8 +38,8 @@ void set_input(ann_t *nn, matrix_t* input);
 
 void print_nn(ann_t *nn);
 
-void forward(cublasHandle_t handle, ann_t *nn, const char* activation_function);
+void forward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, const char* activation_function);
 
-void backward(cublasHandle_t handle, ann_t *nn, matrix_t *y, const char *derivative_actfunct);
+void backward(cublasHandle_t handle, cudaStream_t stream, ann_t *nn, matrix_t *y, const char *derivative_actfunct);
 
 #endif

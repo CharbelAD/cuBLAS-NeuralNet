@@ -12,9 +12,20 @@
 
 matrix_t * alloc_matrix(unsigned rows, unsigned columns, bool zero)
 {
-    matrix_t * res;
-    CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
+    //matrix_t * res;
+    //CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
+    matrix_t * res = (matrix_t*) malloc( sizeof(matrix_t) );
     CUDA_CHECK(cudaMallocManaged((void **) &(res->m), columns * rows * sizeof(double)));
+    if (zero) CUDA_CHECK(cudaMemset(res->m, 0, columns * rows * sizeof(double)));  // https://forums.developer.nvidia.com/t/can-i-set-a-floats-to-zero-with-cudamemset/153706
+    res->columns = columns;
+    res->rows = rows;
+    return res;
+}
+
+matrix_t * alloc_matrix_device(unsigned rows, unsigned columns, bool zero)
+{
+    matrix_t * res = (matrix_t*) malloc( sizeof(matrix_t) );
+    CUDA_CHECK(cudaMalloc((void **) &(res->m), columns * rows * sizeof(double)));
     if (zero) CUDA_CHECK(cudaMemset(res->m, 0, columns * rows * sizeof(double)));  // https://forums.developer.nvidia.com/t/can-i-set-a-floats-to-zero-with-cudamemset/153706
     res->columns = columns;
     res->rows = rows;
@@ -28,16 +39,17 @@ __global__ void set_one(double* vec, int n){
 }
 
 
-matrix_t * alloc_ones(unsigned rows, unsigned columns)
+matrix_t * alloc_ones_device(cudaStream_t stream, unsigned rows, unsigned columns)
 {
-    matrix_t * res;
-    CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
-    CUDA_CHECK(cudaMallocManaged((void **) &(res->m), columns * rows * sizeof(double)));
+    // matrix_t * res;
+    // CUDA_CHECK(cudaMallocManaged((void **) &res, sizeof(matrix_t)));
+    matrix_t * res = (matrix_t*) malloc( sizeof(matrix_t) );
+    CUDA_CHECK(cudaMalloc((void **) &(res->m), columns * rows * sizeof(double)));
     int n = rows * columns;
-    set_one<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(res->m, n);
+    set_one<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK, 0, stream>>>(res->m, n);
+    CUDA_CHECK(cudaDeviceSynchronize());
     res->columns = columns;
     res->rows = rows;
-    CUDA_CHECK(cudaDeviceSynchronize());
     return res;
 }
 
@@ -45,7 +57,7 @@ void destroy_matrix(matrix_t *m)
 {
     //printf("free %p %p\n", m, m->m);
     cudaFree(m->m);
-    cudaFree(m);
+    free(m);
 }
 
 // TODO: review, may need to go to col-major
@@ -84,7 +96,7 @@ __global__ void hadamard_prod(double *v1, double *v2, double *res, int n){
 }
 
 
-void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
+void hadamard_product(cudaStream_t stream, matrix_t *m1, matrix_t *m2, matrix_t *res)
 {
     assert ( (m1->columns == m2->columns)   &&
              (m1->columns == res->columns)  &&
@@ -96,8 +108,8 @@ void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
     //         res->m[idx] = m1->m[idx] * m2->m[idx];
     // }
     int n = m1->rows * m1->columns;
-    hadamard_prod<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, m2->m, res->m, n);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    hadamard_prod<<< (n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK, 0, stream>>>(m1->m, m2->m, res->m, n);
+    //CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void cumatrix_add(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res, double* beta)
@@ -114,7 +126,6 @@ void cumatrix_add(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *r
     // printf("%d, %d, %d, %d, %d\n", m, n, lda, ldb, ldc);
     // printf("(%d, %d),(%d, %d),(%d, %d)\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns);
     CUBLAS_CHECK(cublasDgeam(handle, transa, transb, m, n, &alpha, m1->m, lda, beta, m2->m, ldb, res->m, ldc));
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res)
@@ -127,7 +138,7 @@ void matrix_sum(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
     double beta = 1.0;
     cumatrix_add(handle, m1, m2, res, &beta);
 
-    CUDA_CHECK(cudaDeviceSynchronize());
+    //CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res)
@@ -140,7 +151,7 @@ void matrix_minus(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *r
     double beta = -1.0;
     cumatrix_add(handle, m1, m2, res, &beta);
 
-    CUDA_CHECK(cudaDeviceSynchronize());
+    //CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res, 
@@ -167,7 +178,7 @@ void matrix_mul(cublasHandle_t handle, matrix_t *m1, matrix_t *m2, matrix_t *res
     // printf("(%d, %d),(%d, %d),(%d, %d), A^T %d, B^T %d\n",  m1->rows, m1->columns, m2->rows, m2->columns, res->rows, res->columns, transposea, transposeb);
     // fflush(stdout);
     CUBLAS_CHECK(cublasDgemm(handle, transa, transb, m, n, k, &alpha, m1->m, lda, m2->m, ldb, &beta, res->m, ldc));
-    CUDA_CHECK(cudaDeviceSynchronize());
+    //CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 template<class F>
@@ -199,19 +210,19 @@ __global__ void dsigmoid_kernel(double*  m1, double *res, int n){
         res[index] = dsigmoid_d(m1[index]);
 }
 
-void matrix_function(matrix_t *m1, const char* fct, matrix_t *res)
+void matrix_function(cudaStream_t stream, matrix_t *m1, const char* fct, matrix_t *res)
 {
     assert ( (m1->columns == res->columns) &&             
              (m1->rows == res->rows));
 
     int n = m1->rows * m1->columns;
     if (strcmp(fct, "sigmoid") == 0){
-        sigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, res->m, n);
+        sigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK, 0, stream>>>(m1->m, res->m, n);
     }
     else if (strcmp(fct, "dsigmoid") == 0){
-        dsigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK>>>(m1->m, res->m, n);
+        dsigmoid_kernel<<<(n + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK, 0, stream>>>(m1->m, res->m, n);
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
+    //CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 // NOTE: Unused and should be avoided. Prefer transposing while doing other operations if possible

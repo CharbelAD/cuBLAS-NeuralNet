@@ -53,7 +53,7 @@ double dsigmoid(double x)
     return sigmoid(x)*(1-sigmoid(x));
 }
 
-double accuracy_cmajr(cublasHandle_t handle, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
+double accuracy_cmajr(cublasHandle_t handle, cudaStream_t stream, image* test_img, byte* test_label, unsigned datasize, unsigned minibatch_size, ann_t *nn)
 {
     unsigned good = 0;
     unsigned idx[datasize];    
@@ -67,7 +67,7 @@ double accuracy_cmajr(cublasHandle_t handle, image* test_img, byte* test_label, 
         populate_minibatch(nn->layers[0]->activations->m, y, &idx[i], minibatch_size, test_img, 28*28, test_label, 10);
         //memcpy(nn->layers[0]->activations->m, x, 28*28 * minibatch_size * sizeof(double));     
         
-        forward(handle, nn, "sigmoid");
+        forward(handle, stream, nn, "sigmoid");
         for (int col = 0; col < minibatch_size; col++)
         {
             int idxTrainingData = col + i;
@@ -146,7 +146,7 @@ int main(int argc, char *argv[])
     nn = create_ann(alpha, minibatch_size, number_of_layers, nneurons_per_layer);
     //print_nn(nn);
 
-    printf("starting accuracy %lf\n", accuracy_cmajr(cublasH, test_img, test_label, ntest, minibatch_size, nn));
+    printf("starting accuracy %lf\n", accuracy_cmajr(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn));
 
     
     unsigned *shuffled_idx;// = (unsigned *)malloc(datasize*sizeof(unsigned));
@@ -168,11 +168,11 @@ int main(int argc, char *argv[])
             // TODO: profile the memcpy time saved
             populate_minibatch(nn->layers[0]->activations->m, y, shuffled_idx+i, minibatch_size, train_img, 28*28, train_label, 10);
             //memcpy(nn->layers[0]->activations->m, x, 28 * 28 * minibatch_size * sizeof(double));
-            forward(cublasH, nn, "sigmoid");
+            forward(cublasH, stream, nn, "sigmoid");
             memcpy(out->m, y, 10 * minibatch_size * sizeof(double));            
-            backward(cublasH, nn, out, "dsigmoid");            
+            backward(cublasH, stream, nn, out, "dsigmoid");            
         }     
-        printf("epoch %d accuracy %lf\n", epoch, accuracy_cmajr(cublasH, test_img, test_label, ntest, minibatch_size, nn));
+        printf("epoch %d accuracy %lf\n", epoch, accuracy_cmajr(cublasH, stream, test_img, test_label, ntest, minibatch_size, nn));
     }
 
     cudaFree(x);

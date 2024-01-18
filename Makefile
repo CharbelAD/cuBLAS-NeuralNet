@@ -1,5 +1,5 @@
 CC=nvcc
-CFLAGS=-lm -lcublas --extended-lambda
+CFLAGS=-lm -lcublas -g -G
 OBJ=matrix.o ann.o mnist.o main.o
 EXE=nn.out
 
